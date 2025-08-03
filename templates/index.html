@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Face & Emotion Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    body {
+      text-align: center;
+    }
+    img {
+      border: 3px solid #555;
+      border-radius: 10px;
+      margin-bottom: 20px;
+    }
+    .status {
+      font-size: 1.2em;
+      margin-top: 10px;
+      padding: 10px;
+      background: #fff;
+      display: inline-block;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+  </style>
+</head>
+<body>
+  <h1>🎥 Live Face & Emotion Feed</h1>
+  <img src="/video_feed" width="640" height="480" alt="Webcam Feed">
+  
+  <div class="status" id="status-info">
+    Loading status...
+  </div>
+
+  <script>
+    async function fetchStatus() {
+      try {
+        const response = await fetch('/status');
+        const data = await response.json();
+        document.getElementById('status-info').innerHTML = `
+          <strong>Emotion:</strong> ${data.emotion} <br>
+          <strong>Attention:</strong> ${data.attention} <br>
+          <strong>Face:</strong> ${data.face.name} (${data.face.recognized ? "Recognized" : "Unrecognized"}) <br>
+          ${data.should_break ? "<span style='color:red;'>💤 Suggest taking a break!</span>" : ""}
+        `;
+      } catch (error) {
+        document.getElementById('status-info').textContent = 'Failed to load status.';
+      }
+    }
+
+    setInterval(fetchStatus, 3000); // update every 3 seconds
+    fetchStatus(); // initial load
+  </script>
+  <script>
+    // Check for redirect every 2 seconds
+    setInterval(function() {
+        fetch('/check_redirect')
+            .then(response => response.json())
+            .then(data => {
+                if (data.redirect) {
+                    window.location.href = '/break_page';
+                }
+            })
+            .catch(error => console.error('Error checking redirect status:', error));
+    }, 2000);
+  </script>
+</body>
+</html>

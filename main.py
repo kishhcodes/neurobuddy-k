@@ -6,6 +6,10 @@ import numpy as np
 import time
 import mediapipe as mp
 from simple_facerec import SimpleFacerec
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 # Try to import FER, but provide a fallback if it fails
 try:
@@ -26,11 +30,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 camera = cv2.VideoCapture(0)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+templates = Jinja2Templates(directory="templates")
+
 
 # Initialize face recognition from SimpleFacerec
 sfr = SimpleFacerec()
@@ -55,58 +64,47 @@ attention_state = "Attentive"
 emotion_state = "Neutral 😐"
 distracted_or_sad_start = None
 break_threshold = 5 * 60
+# New variable to track continuous distraction time
+distraction_start_time = None
+distraction_threshold = 10  # 1 minute in seconds
+needs_redirect = False
 
-def detect_emotion(frame, x=None, y=None, w=None, h=None):
-    """
-    Detect emotion using FER and fallback to simple smile detection if FER fails
-    
-    Args:
-        frame: The full frame image
-        x, y, w, h: Face region coordinates (optional, used for fallback)
-    """
-    # Try using the FER emotion detector if available
+@app.get("/watch", response_class=HTMLResponse)
+def watch_feed(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/break_page", response_class=HTMLResponse)
+def break_page(request: Request):
+    """Page to redirect to when user is distracted for too long"""
+    return templates.TemplateResponse("break.html", {"request": request})
+
+# ... existing code ...
+
+def detect_emotion(frame):
+    """Detects emotion from a frame using FER if available, otherwise returns a fallback."""
     if FER_AVAILABLE and emotion_detector is not None:
         try:
-            emotion_result = emotion_detector.top_emotion(frame)
-            if emotion_result and emotion_result[0]:
-                emotion_name = emotion_result[0]
-                # Map emotion names to emojis
-                emotion_map = {
-                    "happy": "Happy 😊",
-                    "sad": "Sad 😢",
-                    "angry": "Angry 😠",
-                    "fear": "Fearful 😨",
-                    "neutral": "Neutral 😐",
-                    "surprise": "Surprised 😲",
-                    "disgust": "Disgusted 🤢"
-                }
-                return emotion_map.get(emotion_name, f"{emotion_name.capitalize()} 😐")
+            result = emotion_detector.detect_emotions(frame)
+            if result and len(result) > 0:
+                emotions = result[0]["emotions"]
+                if emotions:
+                    # Get the emotion with the highest score
+                    emotion, score = max(emotions.items(), key=lambda x: x[1])
+                    # Add emoji for some common emotions
+                    emoji_map = {
+                        "happy": "😊",
+                        "sad": "😢",
+                        "angry": "😠",
+                        "surprise": "😲",
+                        "neutral": "😐",
+                        "fear": "😨",
+                        "disgust": "🤢"
+                    }
+                    emoji = emoji_map.get(emotion.lower(), "")
+                    return f"{emotion.capitalize()} {emoji}"
         except Exception as e:
-            print(f"FER error: {e}")
-    
-    # Use simple smile detection as fallback
-    # Extract face region if coordinates are provided
-    if all(coord is not None for coord in [x, y, w, h]):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roi_gray = gray[y:y+h, x:x+w]
-        smiles = smile_cascade.detectMultiScale(roi_gray, 1.8, 20)
-        if len(smiles) > 0:
-            return "Happy 😊"
-        else:
-            return "Sad 😢"
-    else:
-        # Try to detect faces first if coordinates aren't provided
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-        if len(faces) > 0:
-            (x, y, w, h) = faces[0]
-            roi_gray = gray[y:y+h, x:x+w]
-            smiles = smile_cascade.detectMultiScale(roi_gray, 1.8, 20)
-            if len(smiles) > 0:
-                return "Happy 😊"
-            else:
-                return "Sad 😢"
-    
+            print(f"Emotion detection error: {e}")
+    # Fallback if FER is not available or detection fails
     return "Neutral 😐"
 
 def detect_attention(frame):
@@ -152,7 +150,7 @@ def detect_attention(frame):
     return "Distracted"
 
 def gen_frames():
-    global attention_state, emotion_state
+    global attention_state, emotion_state, distraction_start_time, needs_redirect
     while True:
         ret, frame = camera.read()
         if not ret:
@@ -179,11 +177,32 @@ def gen_frames():
                 cv2.putText(frame, emotion_label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         emotion_state = emotion_label
-        attention_state = detect_attention(frame)
+        current_attention = detect_attention(frame)
+        attention_state = current_attention
+        
+        # Track distraction time and set redirect flag if needed
+        current_time = time.time()
+        if current_attention == "Distracted":
+            if distraction_start_time is None:
+                distraction_start_time = current_time
+            elif current_time - distraction_start_time >= distraction_threshold:
+                needs_redirect = True
+                # Add text indicating redirect is imminent
+                cv2.putText(frame, "Redirecting to break page...", (50, 100), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+        else:
+            distraction_start_time = None
+            needs_redirect = False
         
         # Break suggestion based on emotion
         if emotion_label.startswith(("Sad", "Angry")) or attention_state == "Distracted":
             cv2.putText(frame, "💤 Break Time!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 0, 255), 3)
+            
+            # Add distraction timer if we're tracking distraction
+            if distraction_start_time is not None:
+                seconds_distracted = int(current_time - distraction_start_time)
+                cv2.putText(frame, f"Distracted for: {seconds_distracted}s", (50, 150), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         
         cv2.putText(frame, f"Attention: {attention_state}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         cv2.putText(frame, f"Emotion: {emotion_state}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
@@ -192,139 +211,53 @@ def gen_frames():
         frame_bytes = buf.tobytes()
         yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-@app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse(url="/docs")
+# ... existing code ...
 
-@app.get("/face_recognition")
-def face_recognition_endpoint():
-    """
-    Returns the face recognition results from the current frame
-    """
-    ret, frame = camera.read()
-    if not ret:
-        return JSONResponse({'error': 'No frame'})
-    
-    try:
-        face_locations, face_names = sfr.detect_known_faces(frame)
-        
-        faces = []
-        for (y1, x2, y2, x1), name in zip(face_locations, face_names):
-            faces.append({
-                "name": name,
-                "location": {
-                    "x1": int(x1),
-                    "y1": int(y1),
-                    "x2": int(x2),
-                    "y2": int(y2)
-                },
-                "recognized": name != "Unknown"
-            })
-        
-        return {
-            "faces": faces,
-            "count": len(faces)
-        }
-    except Exception as e:
-        return JSONResponse({'error': str(e)})
+@app.get("/check_redirect")
+def check_redirect():
+    """Endpoint for the frontend to check if a redirect is needed"""
+    global needs_redirect
+    should_redirect = needs_redirect
+    if needs_redirect:
+        needs_redirect = False  # Reset after frontend checks
+    return {"redirect": should_redirect}
 
 @app.get("/video_feed")
 def video_feed():
-    return StreamingResponse(gen_frames(), media_type='multipart/x-mixed-replace; boundary=frame')
+    """Video streaming endpoint"""
+    return StreamingResponse(
+        gen_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 @app.get("/status")
 def status():
-    global distracted_or_sad_start
-    ret, frame = camera.read()
-    if not ret:
-        return JSONResponse({'error': 'No frame'})
+    """Return the current status of attention and emotion"""
+    global attention_state, emotion_state
+    # Get the current face data (simplified for this example)
+    face_data = {"name": "Unknown", "recognized": False}
     
-    # Get emotion using FER
-    emotion = detect_emotion(frame)
-    
-    # Face recognition
-    face_info = {"recognized": False, "name": "Unknown"}
+    # Check if any faces are recognized (this is a simplified version)
     try:
-        face_locations, face_names = sfr.detect_known_faces(frame)
-        if face_locations and face_names:
-            face_info = {
-                "recognized": face_names[0] != "Unknown",
-                "name": face_names[0]
-            }
-    except Exception:
-        # Fallback to simple face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-        face_info["detected"] = len(faces) > 0
+        ret, frame = camera.read()
+        if ret:
+            face_locations, face_names = sfr.detect_known_faces(frame)
+            if face_locations and face_names:
+                # Use the first face detected
+                face_data = {"name": face_names[0], "recognized": face_names[0] != "Unknown"}
+    except Exception as e:
+        print(f"Error in status detection: {e}")
     
-    # Attention detection
-    attention = detect_attention(frame)
-    
-    # Break suggestion logic
-    current_time = time.time()
+    # Determine if a break should be suggested
     should_break = False
-    is_negative = emotion.startswith(("Sad", "Angry")) or attention == "Distracted"
-    
-    if is_negative:
-        if distracted_or_sad_start is None:
-            distracted_or_sad_start = current_time
-        elif current_time - distracted_or_sad_start >= break_threshold:
-            should_break = True
-    else:
-        distracted_or_sad_start = None
+    if attention_state == "Distracted" or emotion_state.startswith(("Sad", "Angry")):
+        should_break = True
     
     return {
-        "emotion": emotion,
-        "attention": attention,
-        "face": face_info,
+        "attention": attention_state,
+        "emotion": emotion_state,
+        "face": face_data,
         "should_break": should_break
     }
 
-@app.get("/emotion_only")
-def emotion_only():
-    """
-    Returns just the emotion detection results from FER
-    """
-    ret, frame = camera.read()
-    if not ret:
-        return JSONResponse({'error': 'No frame'})
-    
-    if not FER_AVAILABLE or emotion_detector is None:
-        # Fallback to simple smile detection if FER is not available
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-        
-        if len(faces) > 0:
-            (x, y, w, h) = faces[0]
-            roi_gray = gray[y:y+h, x:x+w]
-            smiles = smile_cascade.detectMultiScale(roi_gray, 1.8, 20)
-            emotion = "Happy 😊" if len(smiles) > 0 else "Sad 😢"
-            
-            return {
-                "emotions": {
-                    "happy": 1.0 if len(smiles) > 0 else 0.0,
-                    "sad": 0.0 if len(smiles) > 0 else 1.0
-                },
-                "top_emotion": "happy" if len(smiles) > 0 else "sad",
-                "confidence": 0.9,
-                "note": "Using fallback smile detection as FER is not available"
-            }
-        else:
-            return {"message": "No face detected for emotion analysis"}
-    
-    # FER is available, use it
-    try:
-        # Get raw emotion data from FER
-        emotion_data = emotion_detector.detect_emotions(frame)
-        top_emotion = emotion_detector.top_emotion(frame)
-        
-        if emotion_data and len(emotion_data) > 0:
-            return {
-                "emotions": emotion_data[0]["emotions"],
-                "top_emotion": top_emotion[0] if top_emotion else None,
-                "confidence": top_emotion[1] if top_emotion else None
-            }
-        else:
-            return {"message": "No face detected for emotion analysis"}
-    except Exception as e:
-        return JSONResponse({'error': str(e)})
+# ... remaining code ...

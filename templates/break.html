@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Take a Break</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 50px;
+            background-color: #f0f8ff;
+        }
+        .break-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #3366cc;
+        }
+        .emoji {
+            font-size: 72px;
+            margin: 20px 0;
+        }
+        .timer {
+            font-size: 48px;
+            margin: 20px 0;
+            color: #cc3366;
+        }
+        .suggestion {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #e6f2ff;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #3366cc;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 18px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        button:hover {
+            background-color: #254e9c;
+        }
+    </style>
+</head>
+<body>
+    <div class="break-container">
+        <h1>Time for a Break!</h1>
+        <div class="emoji">💤 🧘 🌿</div>
+        <p>You've been distracted for over a minute. Let's take a short break to refocus.</p>
+        
+        <div class="timer" id="timer">5:00</div>
+        
+        <div class="suggestion">
+            <h3>Break Suggestion:</h3>
+            <p>Stand up, stretch, and look at something at least 20 feet away for 20 seconds to reduce eye strain.</p>
+        </div>
+        
+        <button id="skipBtn" onclick="skipBreak()">I'm Ready to Continue</button>
+    </div>
+
+    <script>
+        // Set up a 5-minute timer
+        let timeLeft = 2 * 60; // 5 minutes in seconds
+        const timerElement = document.getElementById('timer');
+        
+        const timer = setInterval(function() {
+            timeLeft--;
+            
+            const minutes = Math.floor(timeLeft / 60);
+            const seconds = timeLeft % 60;
+            
+            // Format as MM:SS
+            timerElement.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+            
+            if (timeLeft <= 0) {
+                clearInterval(timer);
+                window.location.href = '/watch';
+            }
+        }, 1000);
+        
+        function skipBreak() {
+            clearInterval(timer);
+            window.location.href = '/watch';
+        }
+    </script>
+</body>
+</html>
